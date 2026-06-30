@@ -1,0 +1,136 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >-
+  Serverless VPC Provisioner API — Cognito JWT authorization variant.
+  Callers send a Cognito-issued JWT as a Bearer token, validated by the HTTP API
+  JWT authorizer. The default stack (IAM/SigV4) is in template.yaml. See README
+  "Authorization options".
+
+Globals:
+  Function:
+    Timeout: 30
+    MemorySize: 256
+    Runtime: python3.12
+
+Resources:
+  # DynamoDB Table to store VPC states
+  VpcMetadataTable:
+    Type: AWS::Serverless::SimpleTable
+    Properties:
+      TableName: VpcProvisionerApiMetadata
+      PrimaryKey:
+        Name: VpcId
+        Type: String
+
+  # HTTP API Gateway with JWT Authorizer
+  VpcApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      # Mitigate DDoS/flooding by rate-limiting requests at API Gateway level
+      DefaultRouteSettings:
+        DetailedMetricsEnabled: true
+        ThrottlingBurstLimit: 100
+        ThrottlingRateLimit: 50
+      Auth:
+        DefaultAuthorizer: OpenIdAuthorizer
+        Authorizers:
+          OpenIdAuthorizer:
+            IdentitySource: '$request.header.Authorization'
+            JwtConfiguration:
+              Issuer: !Sub "https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}"
+              Audience:
+                - !Ref UserPoolClient
+
+  # Cognito User Pool to manage authenticated users
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: VpcProvisionerUserPool
+      UsernameAttributes:
+        - email
+      AutoVerifiedAttributes:
+        - email
+      MfaConfiguration: OPTIONAL
+      EnabledMfas:
+        - SOFTWARE_TOKEN_MFA
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 12
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+          RequireUppercase: true
+
+  # Cognito User Pool Client for token generation
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: VpcProvisionerUserPoolClient
+      UserPoolId: !Ref UserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+
+  # Monolith Lambda managing FastAPI
+  VpcApiFunction:
+    Type: AWS::Serverless::Function
+    # Metadata:
+    #   BuildMethod: python-uv
+    Properties:
+      CodeUri: ./serverless/
+      Handler: app.handler
+      Environment:
+        Variables:
+          DYNAMODB_TABLE: !Ref VpcMetadataTable
+          # Cognito config enables in-app JWT validation (defense-in-depth behind
+          # the API Gateway authorizer, and protection against direct invocation).
+          COGNITO_USER_POOL_ID: !Ref UserPool
+          COGNITO_APP_CLIENT_ID: !Ref UserPoolClient
+          COGNITO_REGION: !Ref AWS::Region
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref VpcMetadataTable
+        # Policy allowing Lambda to create, tag and tear down the EC2 networking
+        # components used by create_vpc/delete_vpc. Scoped to the stack's region.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - ec2:CreateVpc
+                - ec2:DeleteVpc
+                - ec2:DescribeVpcs
+                - ec2:CreateSubnet
+                - ec2:DeleteSubnet
+                - ec2:DescribeSubnets
+                - ec2:CreateInternetGateway
+                - ec2:AttachInternetGateway
+                - ec2:DetachInternetGateway
+                - ec2:DeleteInternetGateway
+                - ec2:CreateRouteTable
+                - ec2:DeleteRouteTable
+                - ec2:CreateRoute
+                - ec2:AssociateRouteTable
+                - ec2:DisassociateRouteTable
+                - ec2:CreateTags
+              Resource: "*"
+              Condition:
+                StringEquals:
+                  aws:RequestedRegion: !Ref AWS::Region
+      Events:
+        ApiEvent:
+          Type: HttpApi
+          Properties:
+            Path: /{proxy+}
+            Method: ANY
+            ApiId: !Ref VpcApi
+
+Outputs:
+  ApiUrl:
+    Description: "Base URL of your API Gateway"
+    Value: !Sub "https://${VpcApi}.execute-api.${AWS::Region}.amazonaws.com"
+  UserPoolId:
+    Description: "Cognito User Pool ID"
+    Value: !Ref UserPool
+  UserPoolClientId:
+    Description: "Cognito User Pool Client ID"
+    Value: !Ref UserPoolClient

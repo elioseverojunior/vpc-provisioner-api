@@ -1,0 +1,11 @@
+# AWS SAM
+/.aws-sam/
+
+# Localstack
+/.localstack/
+
+# Python
+/**/__pycache__/
+
+# Terraform
+/**/.terraform/

@@ -1,0 +1,51 @@
+services:
+  localstack:
+    container_name: localstack
+    image: localstack/localstack-pro:4
+    pull_policy: missing
+    ports:
+      - "127.0.0.1:4566:4566"             # edge gateway (all services)
+      - "127.0.0.1:4510-4559:4510-4559"   # external service port range
+    environment:
+      # --- Pro license (read from .env; never hardcode) ---
+      LOCALSTACK_AUTH_TOKEN: ${LOCALSTACK_AUTH_TOKEN:?Export LOCALSTACK_AUTH_TOKEN or set LOCALSTACK_AUTH_TOKEN in .env (LocalStack Pro token)}
+
+      # --- Only the services this project actually uses (faster startup) ---
+      SERVICES: "apigateway,cloudformation,ec2,sts,iam,s3,ec2,config,serverless,events,kms,cognito-idp,cloudtrail,cloudwatch,logs,budgets,dynamodb,vpc"
+
+      # --- Debug ---
+      DEBUG: ${DEBUG:-0}
+
+      # --- Pro: state persistence across restarts (set PERSISTENCE=0 to disable) ---
+      PERSISTENCE: ${PERSISTENCE:-1}
+
+      # --- Lambda execution mode (docker-reuse keeps warm containers) ---
+      LAMBDA_RUNTIME_EXECUTOR: docker
+      LAMBDA_REMOVE_CONTAINERS: "true"
+
+      # --- Account id used by the state-bucket bootstrap hook ---
+      TF_STATE_ACCOUNT_ID: ${AWS_ACCOUNT_ID:-000000000000}
+
+      # --- AWS Configuration ---
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_ACCOUNT_ID: ${AWS_ACCOUNT_ID:-000000000000}
+
+      # --- Docker ---
+      DOCKER_HOST: unix:///var/run/docker.sock
+    volumes:
+      # Persisted LocalStack data (gitignored)
+      - "../.localstack:/var/lib/localstack"
+      # Lets LocalStack spawn Lambda containers on the host Docker daemon
+      - "/var/run/docker.sock:/var/run/docker.sock"
+      # Init hooks run once LocalStack is ready (creates the TF state bucket)
+      - "../localstack/ready.d:/etc/localstack/init/ready.d"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:4566/_localstack/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+networks:
+  vpc-provisioner-api:
+    driver: bridge

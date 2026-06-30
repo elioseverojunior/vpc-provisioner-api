@@ -1,0 +1,181 @@
+{
+  "info": {
+    "_postman_id": "f71bbe77-3ee1-442e-8cab-0a37e0393e26",
+    "name": "Serverless VPC Provisioner API",
+    "description": "Collection to test the serverless FastAPI VPC provisioning endpoints.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_exporter_id": "1519644"
+  },
+  "item": [
+    {
+      "name": "Create VPC and Subnets",
+      "request": {
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{authToken}}",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n    \"vpc_cidr\": \"10.0.0.0/16\",\n    \"subnets\": [\n        {\n            \"cidr_block\": \"10.0.1.0/24\",\n            \"availability_zone\": \"us-east-1a\"\n        },\n        {\n            \"cidr_block\": \"10.0.2.0/24\",\n            \"availability_zone\": \"us-east-1b\"\n        }\n    ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/vpc",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "vpc"
+          ]
+        },
+        "description": "Provisions a new VPC and its associated subnets via AWS/LocalStack EC2 services, then saves the metadata in DynamoDB."
+      },
+      "response": []
+    },
+    {
+      "name": "Delete VPC and Subnets",
+      "request": {
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{authToken}}",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": ""
+        },
+        "url": {
+          "raw": "{{baseUrl}}/vpc/:vpc_id",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "vpc",
+            ":vpc_id"
+          ],
+          "variable": [
+            {
+              "key": "vpc_id",
+              "value": "vpc-5b8aa17685480323e"
+            }
+          ]
+        },
+        "description": "Provisions a new VPC and its associated subnets via AWS/LocalStack EC2 services, then saves the metadata in DynamoDB."
+      },
+      "response": []
+    },
+    {
+      "name": "Get VPC Metadata",
+      "request": {
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{authToken}}",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/vpc/:vpc_id",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "vpc",
+            ":vpc_id"
+          ],
+          "variable": [
+            {
+              "key": "vpc_id",
+              "value": "vpc-eb5356b5a02bbe5a0",
+              "description": "The ID of the VPC returned from the POST request"
+            }
+          ]
+        },
+        "description": "Retrieves information about a previously provisioned VPC using its ID directly from the DynamoDB tracking table."
+      },
+      "response": []
+    },
+    {
+      "name": "Get All VPCs Metadata",
+      "request": {
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{authToken}}",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/vpcs?limit=100",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "vpcs"
+          ],
+          "query": [
+            {
+              "key": "limit",
+              "value": "100",
+              "description": "Max records per page (1-1000, default 100)."
+            },
+            {
+              "key": "next_token",
+              "value": "",
+              "description": "Pagination cursor from a previous response's 'next_token'. Omit for the first page.",
+              "disabled": true
+            }
+          ]
+        },
+        "description": "Returns a page of provisioned VPC records from the DynamoDB tracking table. Response shape: { \"items\": [...], \"count\": N, \"next_token\": <cursor|null> }. When 'next_token' is non-null, pass it back via the query param to fetch the next page; a null token means the last page."
+      },
+      "response": []
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8000"
+    },
+    {
+      "key": "authToken",
+      "value": "your_mock_or_real_jwt_token_here"
+    }
+  ]
+}

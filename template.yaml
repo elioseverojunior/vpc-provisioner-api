@@ -1,0 +1,114 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >-
+  Serverless VPC Provisioner API — default stack, IAM / SigV4 authorization.
+  Callers authenticate with AWS credentials (e.g. temporary credentials from an
+  IAM Identity Center permission set) and sign requests with SigV4. The Cognito
+  JWT alternative is in template-cognito.yaml; deploy whichever fits your
+  callers. See README "Authorization options".
+
+Globals:
+  Function:
+    Timeout: 30
+    MemorySize: 256
+    Runtime: python3.12
+
+Resources:
+  # DynamoDB Table to store VPC states (identical to the Cognito variant)
+  VpcMetadataTable:
+    Type: AWS::Serverless::SimpleTable
+    Properties:
+      TableName: VpcProvisionerApiMetadata
+      PrimaryKey:
+        Name: VpcId
+        Type: String
+
+  # HTTP API Gateway with IAM (SigV4) authorization.
+  VpcApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      # Mitigate DDoS/flooding by rate-limiting requests at API Gateway level
+      DefaultRouteSettings:
+        DetailedMetricsEnabled: true
+        ThrottlingBurstLimit: 100
+        ThrottlingRateLimit: 50
+      Auth:
+        # Enable IAM authorization and make it the default for every route.
+        # "Authorization open to all authenticated users" (per the assessment)
+        # maps to: any IAM principal granted execute-api:Invoke on this API
+        # (see InvokeApiPolicy below).
+        EnableIamAuthorizer: true
+        DefaultAuthorizer: AWS_IAM
+
+  # Managed policy granting permission to invoke the API. Attach this to your
+  # operator IAM roles or IAM Identity Center permission sets. Not given an
+  # explicit name so the stack deploys with CAPABILITY_IAM (no NAMED_IAM).
+  InvokeApiPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Allows invoking the VPC Provisioner HTTP API (SigV4).
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action: execute-api:Invoke
+            Resource: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${VpcApi}/*"
+
+  # Monolith Lambda managing FastAPI
+  VpcApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./
+      Handler: serverless.app.handler
+      Environment:
+        Variables:
+          DYNAMODB_TABLE: !Ref VpcMetadataTable
+          # The gateway authenticates callers via SigV4, so the app trusts the
+          # gateway and skips its in-app bearer-token check.
+          AUTH_MODE: iam
+          # When running locally inside Docker/Colima, set LocalStack hostname so
+          # the Lambda container can reach the LocalStack service on the host.
+          LOCALSTACK_HOSTNAME: host.docker.internal
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref VpcMetadataTable
+        # Policy allowing Lambda to create, tag and tear down the EC2 networking
+        # components used by create_vpc/delete_vpc. Scoped to the stack's region.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - ec2:CreateVpc
+                - ec2:DeleteVpc
+                - ec2:DescribeVpcs
+                - ec2:CreateSubnet
+                - ec2:DeleteSubnet
+                - ec2:DescribeSubnets
+                - ec2:CreateInternetGateway
+                - ec2:AttachInternetGateway
+                - ec2:DetachInternetGateway
+                - ec2:DeleteInternetGateway
+                - ec2:CreateRouteTable
+                - ec2:DeleteRouteTable
+                - ec2:CreateRoute
+                - ec2:AssociateRouteTable
+                - ec2:DisassociateRouteTable
+                - ec2:CreateTags
+              Resource: "*"
+              Condition:
+                StringEquals:
+                  aws:RequestedRegion: !Ref AWS::Region
+      Events:
+        ApiEvent:
+          Type: HttpApi
+          Properties:
+            Path: /{proxy+}
+            Method: ANY
+            ApiId: !Ref VpcApi
+
+Outputs:
+  ApiUrl:
+    Description: "Base URL of your API Gateway"
+    Value: !Sub "https://${VpcApi}.execute-api.${AWS::Region}.amazonaws.com"
+  InvokeApiPolicyArn:
+    Description: "Attach this managed policy to operator roles / IAM Identity Center permission sets to grant API access."
+    Value: !Ref InvokeApiPolicy

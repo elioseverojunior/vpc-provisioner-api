@@ -1,0 +1,190 @@
+[settings]
+idiomatic_version_file_enable_tools = ["python"]
+python.uv_venv_auto = "source"
+
+[tasks]
+[tasks.requirements]
+description = "Generat Python requirements.txt"
+shell = "bash -c"
+run = "uv export --format requirements-txt --no-dev --no-header -o requirements.txt"
+
+[tasks.local]
+description = "Run the SAM local API with the Colima Docker socket"
+shell = "bash -c"
+run = '''
+AWS_SAM_LOCAL=1 uv run uvicorn serverless.app:app --reload
+'''
+
+[tasks.sam-local]
+description = "Run the SAM local API with the Colima Docker socket"
+shell = "bash -c"
+run = '''
+#!/usr/bin/env bash
+# Helper script to run SAM local API with Colima Docker
+
+set -e
+
+COMMAND=${1:-start-api}
+# Remaining args are passed to `sam local` after the command
+shift || true
+EXTRA_ARGS="$@"
+
+# Check if Colima socket exists
+COLIMA_SOCKET="/${HOME}/.colima/default/docker.sock"
+if [ ! -S "$COLIMA_SOCKET" ]; then
+    echo "❌ Error: Colima Docker socket not found at $COLIMA_SOCKET"
+    echo ""
+    echo "Make sure Colima is running:"
+    echo "  colima start"
+    exit 1
+fi
+
+# Check if Docker is responsive
+if ! docker ps > /dev/null 2>&1; then
+    echo "❌ Error: Docker daemon is not responding"
+    echo ""
+    echo "Verify Colima is running:"
+    echo "  docker ps"
+    exit 1
+fi
+
+export DOCKER_HOST="unix://$COLIMA_SOCKET"
+
+echo "🚀 Building the project (inside container) to install dependencies..."
+sam build --use-container
+
+echo "🚀 Starting SAM local $COMMAND with Colima Docker..."
+echo "   DOCKER_HOST=$DOCKER_HOST"
+echo ""
+
+# Use the built template so SAM uses the artifacts that include installed dependencies
+sam local "$COMMAND" --template .aws-sam/build/template.yaml $EXTRA_ARGS
+'''
+
+[tasks.onboard-user]
+description = "Create/confirm a Cognito user in the deployed stack and print a Bearer token"
+shell = "bash -c"
+usage = '''
+flag "--email <email>" help="User Email" default="user@example.com" env="EMAIL"
+flag "--password <password>" help="User Password" default="S0me-Str0ng-Pass!" env="PASSWORD"
+flag "--profile <profile>" help="AWS Profile" default="platform-2026" env="AWS_PROFILE"
+flag "--region <region>" help="AWS region" default="us-east-2" env="AWS_REGION"
+'''
+run = '''
+#!/usr/bin/env bash
+# Onboard a Cognito user against the DEPLOYED Cognito variant stack
+# (template-cognito.yaml / JWT mode) and fetch a ready-to-use Authorization
+# header. Intended for demo/testing. Not applicable to the default IAM stack.
+#
+# Usage:
+#   EMAIL=user@example.com PASSWORD='S0me-Str0ng-Pass!' mise run onboard-user
+#
+# Optional overrides: STACK_NAME (default vpc-provisioner-api), AWS_REGION (default us-east-1).
+# Note: PASSWORD is visible in the process list — use a throwaway value for demos.
+
+set -euo pipefail
+
+EMAIL="${EMAIL:-"${usage_email}"}"
+PASSWORD="${PASSWORD:-"${usage_password}"}"
+STACK_NAME="${STACK_NAME:-vpc-provisioner-api}"
+REGION="${AWS_REGION:-"${usage_region}"}"
+
+cfn_output() {
+  aws cloudformation \
+    --profile "${usage_profile}" \
+    --region "${usage_region}" \
+    describe-stacks --stack-name "$STACK_NAME" --region "$REGION" \
+    --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" --output text 2>/dev/null
+}
+
+echo "🔎 Reading Cognito IDs from stack '${STACK_NAME}' (${REGION})..."
+USER_POOL_ID="$(cfn_output UserPoolId)"
+CLIENT_ID="$(cfn_output UserPoolClientId)"
+
+if [ -z "$USER_POOL_ID" ] || [ "$USER_POOL_ID" = "None" ]; then
+  echo "❌ Could not read UserPoolId from stack '${STACK_NAME}'. Deploy it first (sam deploy)." >&2
+  exit 1
+fi
+
+echo "👤 Creating user ${EMAIL} (skipped if it already exists)..."
+aws cognito-idp admin-create-user \
+  --profile "${usage_profile}" \
+  --region "${usage_region}" \
+  --user-pool-id "$USER_POOL_ID" --region "$REGION" \
+  --username "$EMAIL" \
+  --user-attributes Name=email,Value="$EMAIL" Name=email_verified,Value=true \
+  --message-action SUPPRESS >/dev/null 2>&1 || echo "   (user already exists — continuing)"
+
+echo "🔑 Setting a permanent password (skips the first-login reset flow)..."
+aws cognito-idp \
+  --profile "${usage_profile}" \
+  --region "${usage_region}" \
+  admin-set-user-password \
+  --user-pool-id "$USER_POOL_ID" --region "$REGION" \
+  --username "$EMAIL" --password "$PASSWORD" --permanent
+
+echo "🪪 Authenticating to fetch the ID token..."
+ID_TOKEN="$(aws cognito-idp \
+  --profile "${usage_profile}" \
+  --region "${usage_region}" \
+  initiate-auth \
+  --client-id "$CLIENT_ID" --region "$REGION" \
+  --auth-flow USER_PASSWORD_AUTH \
+  --auth-parameters USERNAME="$EMAIL",PASSWORD="$PASSWORD" \
+  --query "AuthenticationResult.IdToken" --output text)"
+
+echo ""
+echo "✅ Onboarded ${EMAIL}. Call the API with:"
+echo ""
+echo "   Authorization: Bearer ${ID_TOKEN}"
+echo ""
+'''
+
+[tasks.deploy]
+description = "Build and deploy the API (default IAM stack; --cognito for the JWT variant)"
+# Arguments are parsed by mise's usage spec and exposed as $usage_* env vars.
+# (The old {{arg}}/{{flag}} Tera templating is deprecated in mise.)
+usage = '''
+flag "--cognito" help="Deploy the Cognito JWT variant (template-cognito.yaml) instead of the default IAM stack"
+flag "--guided" help="Run sam deploy interactively (--guided)"
+flag "--profile <profile>" help="AWS Profile" default="localstack" env="AWS_PROFILE"
+flag "--region <region>" help="AWS region" default="us-east-1" env="AWS_REGION"
+'''
+run = '''
+#!/usr/bin/env bash
+# Build and deploy a stack.
+#   mise run deploy                 # IAM/SigV4 (template.yaml)
+#   mise run deploy --cognito       # Cognito JWT (template-cognito.yaml)
+#   mise run deploy --cognito --guided
+# Override the stack name with STACK_NAME=... if you need something custom.
+
+set -euo pipefail
+
+if [ "${usage_cognito:-false}" = "true" ]; then
+  TEMPLATE="template-cognito.yaml"
+  STACK="${STACK_NAME:-vpc-provisioner-api}"
+  AUTH="Cognito JWT"
+else
+  TEMPLATE="template.yaml"
+  STACK="${STACK_NAME:-vpc-provisioner-api}"
+  AUTH="IAM/SigV4"
+fi
+
+GUIDED=""
+[ "${usage_guided:-false}" = "true" ] && GUIDED="--guided"
+
+echo "🏗  Building ${TEMPLATE} (${AUTH})..."
+sam build --template "$TEMPLATE"
+
+echo "🚀 Deploying stack '${STACK}' from ${TEMPLATE}..."
+# Deploy uses the freshly built artifact in .aws-sam/build and the
+# [default.deploy.parameters] from samconfig.toml; --stack-name overrides it.
+sam deploy --profile "${usage_profile}" --stack-name "$STACK" $GUIDED
+'''
+
+[tasks."docker:build"]
+description = "Run the SAM local API with the Colima Docker socket"
+shell = "bash -c"
+run = '''
+docker buildx build --pull -f 'Dockerfile' -t vpc-provisioner-api:latest --progress=plain .
+'''

@@ -1,0 +1,28 @@
+name: vpc-provisioner-api
+
+include:
+  - localstack/docker-compose.yml
+
+services:
+  vpc-provisioner-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: vpc-provisioner-api
+    ports:
+      - "8000:8000"
+    environment:
+      # --- AWS Configuration ---
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_ACCOUNT_ID: ${AWS_ACCOUNT_ID:-000000000000}
+      # --- Localstack
+      LOCALSTACK_HOSTNAME: localstack
+
+      # --- API Log Level
+      LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
+    depends_on:
+      - localstack
+
+networks:
+  vpc-provisioner-api:
+    driver: bridge
